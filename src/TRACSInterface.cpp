@@ -11,10 +11,19 @@
  * silicon detectors simulation.
  *
  */
- std::mutex mtx2;           // mutex for critical section
+ std::mutex mtx_nt, mtx2;           // mutex for critical section
+ //std::vector<SMSDetector*> detector(num_threads);
+
 //extern const int num_threads;
-TRACSInterface::TRACSInterface(std::string filename)
+TRACSInterface::TRACSInterface(std::string filename, int nthreads)
 {
+
+	num_threads = nthreads;
+	if(num_threads <= 0){
+		std::cout << "Error reading number of cores! Setting num_threads = 4"  <<std::endl;
+		num_threads = 4;
+	}
+	//num_threads = std::thread::hardware_concurrency(); // No. of threads
 	neff_param = std::vector<double>(8,0);
 	//utilities::parse_config_file(filename, carrierFile, depth, width, pitch, nns, temp, trapping, fluence, n_cells_x, n_cells_y, bulk_type, implant_type, C, dt, max_time, vBias, vDepletion, zPos, yPos, neff_param, neffType);
 	utilities::parse_config_file(filename, carrierFile, depth, width,  pitch, nns, temp, trapping, fluence, nThreads, n_cells_x, n_cells_y, bulk_type, implant_type, waveLength, scanType, C, dt, max_time, vInit, deltaV, vMax, vDepletion, zInit, zMax, deltaZ, yInit, yMax, deltaY, neff_param, neffType);
@@ -58,27 +67,16 @@ TRACSInterface::TRACSInterface(std::string filename)
 	voltage = std::to_string((int) std::floor(vInit));
 
 	parameters["allow_extrapolation"] = true;
-
-	detector = new SMSDetector(pitch, width, depth, nns, bulk_type, implant_type, n_cells_x, n_cells_y, temp, trapping, fluence, neff_param, neffType);
-	//SMSDetector detector(pitch, width, depth, nns, bulk_type, implant_type, n_cells_x, n_cells_y, temp, trapping, fluence, neff_param, neffType);
-	//detector(pitch, width, depth, nns, bulk_type, implant_type, n_cells_x, n_cells_y, temp, trapping, fluence, neff_param, neffType);
-	//detector = new SMSDetector(pitch, width, depth, nns, bulk_type, implant_type, n_cells_x, n_cells_y, temp, trapping, fluence, neff_param, neffType):
-	//pDetector = &detector;
-
 	n_tSteps = (int) std::floor(max_time / dt);
+	//resizing
 
-	carrierCollection = new CarrierCollection(detector);
+	detector.resize(num_threads);
 	QString carrierFileName = QString::fromUtf8(carrierFile.c_str());
-	carrierCollection->add_carriers_from_file(carrierFileName);
-
-	//currents
-	i_elec.resize((size_t) n_tSteps);
-	i_hole.resize ((size_t) n_tSteps);
-	i_total.resize((size_t) n_tSteps);
-
-	i_elec = 0;
-	i_hole = 0;
-	i_total = 0;
+	carrierCollection.resize(num_threads);
+	
+	i_elec.resize((size_t) num_threads);
+	i_hole.resize ((size_t) num_threads);
+	i_total.resize((size_t) num_threads);
 
 	z_shifts.resize((size_t) n_zSteps+1,0.);
 	z_shifts1.resize((size_t) n_zSteps1+1,0.);
@@ -86,6 +84,55 @@ TRACSInterface::TRACSInterface(std::string filename)
 
 	//distribute z coordinates evenly between threads
 	z_shifts_array.resize(num_threads);
+
+	i_ramo.resize((size_t) num_threads);
+	i_rc.resize((size_t) num_threads);
+	i_conv.resize((size_t) num_threads);
+	for (int i = 0; i < num_threads; i++)
+	{
+		detector[i] = new SMSDetector(pitch, width, depth, nns, bulk_type, implant_type, n_cells_x, n_cells_y, temp, trapping, fluence, neff_param, neffType);
+		carrierCollection[i] = new CarrierCollection(detector[i]);
+		carrierCollection[i]->add_carriers_from_file(carrierFileName);
+		i_elec[i].resize((size_t) n_tSteps);
+		i_hole[i].resize ((size_t) n_tSteps);
+		i_total[i].resize((size_t) n_tSteps);
+		i_elec[i] = 0;
+		i_hole[i] = 0;
+		i_total[i] = 0;
+		i_ramo[i]  = NULL;
+		i_rc[i]    = NULL;
+		i_conv[i]  = NULL;
+	}
+	//SMSDetector detector(pitch, width, depth, nns, bulk_type, implant_type, n_cells_x, n_cells_y, temp, trapping, fluence, neff_param, neffType);
+	//detector(pitch, width, depth, nns, bulk_type, implant_type, n_cells_x, n_cells_y, temp, trapping, fluence, neff_param, neffType);
+	//detector = new SMSDetector(pitch, width, depth, nns, bulk_type, implant_type, n_cells_x, n_cells_y, temp, trapping, fluence, neff_param, neffType):
+	//pDetector = &detector;
+
+	
+
+	/*
+	for (int i = 0; i < num_threads; i++)
+	{
+		carrierCollection[i] = new CarrierCollection(detector[i]);
+		carrierCollection[i]->add_carriers_from_file(carrierFileName);
+	}
+	*/
+
+	//currents
+	/*
+	for (int i = 0; i < num_threads; i++)
+	{
+		i_elec[i].resize((size_t) n_tSteps);
+		i_hole[i].resize ((size_t) n_tSteps);
+		i_total[i].resize((size_t) n_tSteps);
+
+		i_elec[i] = 0;
+		i_hole[i] = 0;
+		i_total[i] = 0;
+	}
+	*/
+
+	
 	int t_sum = 0;
 	for (int i = 0; i < num_threads; i++)
 	{
@@ -93,7 +140,7 @@ TRACSInterface::TRACSInterface(std::string filename)
 		z_shifts_array[i].resize(n_zSteps_iter, 0.);
 		t_sum += n_zSteps_iter;
 	}
-
+	
 	y_shifts.resize ((size_t) n_ySteps+1,0.);
 	voltages.resize((size_t) n_vSteps+1,0.);
 
@@ -160,10 +207,24 @@ TRACSInterface::TRACSInterface(std::string filename)
 	utilities::write_to_hetct_header(hetct_conv_filename, detector, C, dt, y_chifs, z_chifs, waveLength, scanType, carrierFile, voltages);
 	utilities::write_to_hetct_header(hetct_noconv_filename, detector, C, dt, y_chifs, z_chifs, waveLength, scanType, carrierFile, voltages);
 */
+	//resizing
+	/*
+	for (int i = 0; i < num_threads; ++i)
+	{
+		i_ramo[i]  = NULL;
+		i_rc[i]    = NULL;
+		i_conv[i]  = NULL;
+	}
+*/
+	yPos.resize((size_t)num_threads);
+	zPos.resize((size_t)num_threads);
+	//i_ramo_array.clear();
+	//i_conv_array.clear();
+	//i_rc_array.clear();
+	resize_array();
+	write_header(0);
+
 	
-	i_ramo  = NULL;
-	i_rc    = NULL;
-	i_conv  = NULL;
 }
 // Reads values, initializes detector
 
@@ -176,9 +237,9 @@ TRACSInterface::~TRACSInterface()
 /*
  * Convert i_total to TH1D
  */
-TH1D * TRACSInterface::GetItRamo()
+TH1D * TRACSInterface::GetItRamo(int tid)
 {
-	if (i_ramo != NULL) 
+	if (i_ramo[tid] != NULL) 
 	{
 	}
 	else
@@ -188,27 +249,27 @@ TH1D * TRACSInterface::GetItRamo()
 		TString htit, hname;
 		htit.Form("ramo_%d_%d", tcount, count1);
 		hname.Form("Ramo_current_%d_%d", tcount, count1);
-		i_ramo  = new TH1D(htit,hname,n_tSteps, 0.0, max_time);
+		i_ramo[tid]  = new TH1D(htit,hname,n_tSteps, 0.0, max_time);
 		//std::cout << htit << std::endl;
 
 		// Compute time + format vectors for writting to file
 		for (int j=0; j < n_tSteps; j++)
 		{
-			i_ramo->SetBinContent(j+1, i_total[j] );
+			i_ramo[tid]->SetBinContent(j+1, i_total[tid][j] );
 		}
 		count1++;
 
 	}
-		return i_ramo;
+		return i_ramo[tid];
 }
 
 /*
  * Convert i_total to TH1D after simulating simple RC circuit
  */
-TH1D * TRACSInterface::GetItRc()
+TH1D * TRACSInterface::GetItRc(int tid)
 {
 
-	if (i_rc != NULL) 
+	if (i_rc[tid] != NULL) 
 	{
 	}
 	else
@@ -218,28 +279,28 @@ TH1D * TRACSInterface::GetItRc()
 		TString htit, hname;
 		htit.Form("ramo_rc%d%d", tcount, count2);
 		hname.Form("Ramo_current_%d_%d", tcount, count2);
-		i_rc    = new TH1D(htit,hname,n_tSteps, 0.0, max_time);
+		i_rc[tid] = new TH1D(htit,hname,n_tSteps, 0.0, max_time);
 		std::valarray<double> i_shaped ((size_t) n_tSteps);	
 		double RC = 50.*C; // Ohms*Farad
 		double alfa = dt/(RC+dt);
 
 		for (int j = 1; j <n_tSteps; j++) 
 		{
-			i_shaped[j]=i_shaped[j-1]+alfa*(i_total[j]-i_shaped[j-1]);
-			i_rc->SetBinContent(j+1, i_shaped[j]);
+			i_shaped[j]=i_shaped[j-1]+alfa*(i_total[tid][j]-i_shaped[j-1]);
+			i_rc[tid]->SetBinContent(j+1, i_shaped[j]);
 		}
 		count2++;
 
 	}
-		return i_rc;
+		return i_rc[tid];
 }
 
 /*
  * Convert i_total to TH1D after convolution with the amplifier TransferFunction
  */
-TH1D * TRACSInterface::GetItConv()
+TH1D * TRACSInterface::GetItConv(int tid)
 {
-	if (i_conv != NULL) 
+	if (i_conv[tid] != NULL) 
 	{
 	}
 	else
@@ -249,14 +310,14 @@ TH1D * TRACSInterface::GetItConv()
 		TString htit, hname;
 		htit.Form("ramo_conv_%d_%d", tcount, count3);
 		hname.Form("Ramo current_%d_%d", tcount, count3);
-		i_conv  = new TH1D(htit,hname,n_tSteps, 0.0, max_time);
-		i_ramo = GetItRamo();
+		i_conv[tid]  = new TH1D(htit,hname,n_tSteps, 0.0, max_time);
+		i_ramo[tid] = GetItRamo();
 		//mtx2.lock();
-		i_conv = H1DConvolution( i_ramo , C*1.e12, tcount );
+		i_conv[tid] = H1DConvolution( i_ramo[tid] , C*1.e12, tcount );
 		//mtx2.unlock();
 		count3++;
 	}
-		return i_conv;
+		return i_conv[tid];
 }
 
 /*
@@ -264,17 +325,17 @@ TH1D * TRACSInterface::GetItConv()
  * No variable is returned. To get the current one must choose the apropiate Getter for 
  * one's needs
  */
-void TRACSInterface::simulate_ramo_current()
+void TRACSInterface::simulate_ramo_current(int tid)
 {
-	i_rc = NULL;
-	i_ramo = NULL;
-	i_conv = NULL;
-	i_hole = 0;
-	i_elec = 0;
-	i_total = 0;
+	i_rc[tid] = NULL;
+	i_ramo[tid] = NULL;
+	i_conv[tid] = NULL;
+	i_hole[tid] = 0;
+	i_elec[tid] = 0;
+	i_total[tid] = 0;
 
-	carrierCollection->simulate_drift( dt, max_time, yPos, zPos, i_elec, i_hole);
-	i_total = i_elec + i_hole;
+	carrierCollection[tid]->simulate_drift( dt, max_time, yPos[tid], zPos[tid], i_elec[tid], i_hole[tid]);
+	i_total[tid] = i_elec[tid] + i_hole[tid];
 }
 
 /*
@@ -292,8 +353,11 @@ void TRACSInterface::set_NeffParam(std::vector<double> newParam)
 	{
 		std::cout << "Error setting up new Neff, incorrect number of parameters" << std::endl;
 	}
-
-	detector->set_neff_param(neff_param);
+	for (int i = 0; i < num_threads; i++)
+	{
+		detector[i]->set_neff_param(neff_param);
+	}
+	
 }
 
 /*
@@ -317,7 +381,10 @@ std::vector<double>TRACSInterface::get_NeffParam()
 void TRACSInterface::set_trappingTime(double newTrapTime)
 {
 	trapping = newTrapTime;
-	detector->set_trapping_time(trapping);
+	for (int i = 0; i < num_threads; ++i)
+	{
+		detector[i]->set_trapping_time(trapping);
+	}
 }
 
 /*
@@ -326,9 +393,9 @@ void TRACSInterface::set_trappingTime(double newTrapTime)
  * the detector they will not produce current. This is relevant mainly for 
  * edge-TCT simulations.
  */
-void TRACSInterface::set_zPos(double newZPos)
+void TRACSInterface::set_zPos(double newZPos, int tid)
 {
-	zPos = newZPos;
+	zPos[tid] = newZPos;
 }
 
 /*
@@ -337,13 +404,13 @@ void TRACSInterface::set_zPos(double newZPos)
  * the detector they will not produce current. This is used to center the red 
  * pulse in redTCT and to center the focus in TPA and edgeTCT
  */
-void TRACSInterface::set_yPos(double newYPos)
+void TRACSInterface::set_yPos(double newYPos, int tid)
 {
 	if (std::abs(newYPos) > (2*nns+1)*pitch)
 	{
 		std::cout << "Watch out! You probably set the laser out of the detector" << std::endl;
 	}
-	yPos = newYPos;
+	yPos[tid] = newYPos;
 }
 
 /*
@@ -353,7 +420,11 @@ void TRACSInterface::set_yPos(double newYPos)
 void TRACSInterface::set_vBias(double newVBias)
 {
 	vBias = newVBias;
-	detector->set_voltages(vBias, vDepletion);
+	for (int i = 0; i < num_threads; i++)
+	{
+		detector[i]->set_voltages(vBias, vDepletion);
+
+	}
 }
 
 /*
@@ -372,20 +443,18 @@ void TRACSInterface::set_vBias(double newVBias)
  * Weighting field and potential need not be calculated again since they 
  * are independent on those parameters.
  */
-void TRACSInterface::calculate_fields()
+void TRACSInterface::calculate_fields(int tid)
 {
 	// Get detector ready
 	//SMSDetector detector(pitch, width, depth, nns, bulk_type, implant_type, n_cells_x, n_cells_y, temp, trapping, fluence, neff_param, neffType);
 	//pDetector = &detector;
-	detector->solve_w_u();
-	detector->solve_d_u();
-	detector->solve_w_f_grad();
-	detector->solve_d_f_grad();
-	detector->get_mesh()->bounding_box_tree();
+	detector[tid]->solve_w_u();
+	detector[tid]->solve_d_u();
+	detector[tid]->solve_w_f_grad();
+	detector[tid]->solve_d_f_grad();
+	detector[tid]->get_mesh()->bounding_box_tree();
 	//detector->solve_d_f_grad();
 	//detector->solve_d_u();
-	
-	
 	
 }
 
@@ -397,7 +466,11 @@ void TRACSInterface::calculate_fields()
 void TRACSInterface::set_neffType(std::string newParametrization)
 {
 	neffType = newParametrization;
-	detector->set_neff_type(neffType);
+	for (int i = 0; i < num_threads; ++i)
+	{
+		detector[i]->set_neff_type(neffType);
+
+	}
 
 }
 
@@ -409,7 +482,10 @@ void TRACSInterface::set_neffType(std::string newParametrization)
 void TRACSInterface::set_carrierFile(std::string newCarrFile)
 {
 	QString carrierFileName = QString::fromUtf8(newCarrFile.c_str());
-	carrierCollection->add_carriers_from_file(carrierFileName);
+	for (int i = 0; i < num_threads; ++i)
+	{
+		carrierCollection[i]->add_carriers_from_file(carrierFileName);
+	}
 }
 
 
@@ -427,6 +503,7 @@ void TRACSInterface::set_carrierFile(std::string newCarrFile)
  *	example: TRACSsim->loop_on("x","v","y");
  * 
  */
+ /*
   void TRACSInterface::loop_on(int tid)
  {
  	params[0] = 0; //zPos 
@@ -459,6 +536,108 @@ void TRACSInterface::set_carrierFile(std::string newCarrFile)
 								mtx2.lock();
 								i_conv = GetItConv();
 								i_conv_array[tid][params[0]] = i_conv; // for output
+								mtx2.unlock();
+								//write to file
+								//mtx2.lock();
+								//utilities::write_to_file_row(hetct_conv_filename, i_conv, detector->get_temperature(), y_shifts[params[1]], z_shifts_array[tid][params[0]], voltages[params[2]]);
+								//utilities::write_to_file_row(hetct_noconv_filename, i_ramo, detector->get_temperature(), y_shifts[params[1]], z_shifts_array[tid][params[0]], voltages[params[2]]);
+								//mtx2.unlock();
+							}
+						}
+						//std::string root_filename = start+"_dt"+dtime+"ps_"+cap+"pF_t"+trap+"ns_"+voltage+"V_"+neigh+"nns_"+scanType+".root";
+						 // std::string hetct_filename = start+"_dt"+dtime+"ps_"+cap+"pF_t"+trap+"ns_dz"+stepZ+"um_dy"+stepY+"dV"+stepV+"V_"+neigh+"nns_"+scanType+".hetct";
+
+						// Open a ROOT file to save result
+						//TFile *tfile = new TFile(root_filename.c_str(), "RECREATE" );
+						//i_ramo->Write();
+						//i_rc->Write();
+						//tfile->Close();
+	 		 		}
+ 	
+	 		
+ 	n_par0 = 0;
+ 	n_par1 = 0;
+ 	n_par2 = 0;
+
+ }
+*/
+ /*
+ * MULTITHREADING 
+ *A loop through all three parameters
+ *	"v": voltage, "z": z-axis, "y": y-axis
+ * Takes thread_id as input argument
+ *	example: TRACSsim->loop_on(tid)
+ * 
+ */
+void TRACSInterface::loop_on()
+{
+	std::vector<std::thread> t(num_threads);
+//	         		t.resize(num_threads);
+	for (int i = 0; i < num_threads; i++) {
+         	//if(i==0)
+         	//	mtx_nt.lock();
+             t[i] = std::thread(&TRACSInterface::loop_on_thread, this, i);
+         }
+  //Join the threads with the main thread
+         for (int i = 0; i < num_threads; i++) {
+             t[i].join();
+         }
+    //write output to single file!
+    //write_to_file(0);
+}
+
+/*
+ * MULTITHREADING 
+ *A loop through all three parameters
+ *	"v": voltage, "z": z-axis, "y": y-axis
+ *	example: TRACSsim->loop_on("x","v","y");
+ * 
+ */
+  void TRACSInterface::loop_on_thread(int tid)
+ {
+ 	if(tid==0)
+	      	{
+	      		//i_ramo_array.clear();
+				//i_conv_array.clear();
+	      		//resize_array();
+	      		//write_header(tid);
+	      		//TRACSsim.resize(num_threads);
+	      		//t.resize(num_threads);
+	      		//mtx_nt.unlock();
+	      	}
+		std::vector<int> params = {0, 0, 0};
+ 	params[0] = 0; //zPos 
+ 	params[1] = 0; //yPos;
+ 	params[2] = 0; //vPos;
+ 	
+ 			int n_par0 = (int) z_shifts_array[tid].size();
+ 			//n_par0 = (int) i_ramo_array[tid].size()-1;
+
+		 	 		//n_par0 = n_zSteps_array;
+		 	 		int n_par1 = n_ySteps;
+			 		int n_par2 = n_vSteps;
+	 		 		//loop
+		 		 	for (params[2] = 0; params[2] < n_par2 + 1; params[2]++)
+		 			{
+		 	 			detector[tid]->set_voltages(voltages[params[2]], vDepletion);
+						calculate_fields(tid);
+
+						for (params[1] = 0; params[1] < n_par1 + 1; params[1]++)
+						{
+							set_yPos(y_shifts[params[1]], tid);
+							for (params[0] = 0; params[0] < n_par0; params[0]++)
+							{
+								std::cout << "Height " << z_shifts_array[tid][params[0]] << " of " << z_shifts.back()  <<  " || Y Position " << y_shifts[params[1]] << " of " << y_shifts.back() << " || Voltage " << voltages[params[2]] << " of " << voltages.back() << std::endl;								
+								set_zPos(z_shifts_array[tid][params[0]], tid);
+								simulate_ramo_current(tid);
+								i_ramo[tid] = GetItRamo(tid);
+								i_ramo_array[tid][params[0]] = i_ramo[tid]; // for output
+								i_ramo[tid] = NULL;
+								i_rc[tid] = GetItRc(tid);
+								i_rc_array[tid][params[0]] = i_rc[tid]; // for output								
+								mtx2.lock();
+								i_conv[tid] = GetItConv(tid);
+								i_conv_array[tid][params[0]] = i_conv[tid]; // for output
 								mtx2.unlock();
 								//write to file
 								//mtx2.lock();
@@ -514,9 +693,9 @@ void TRACSInterface::set_carrierFile(std::string newCarrFile)
 
    
 	// write header for data analysis
-	utilities::write_to_hetct_header(hetct_conv_filename, detector, C, dt, y_chifs, z_chifs, waveLength, scanType, carrierFile, voltages);
-	utilities::write_to_hetct_header(hetct_noconv_filename, detector, C, dt, y_chifs, z_chifs, waveLength, scanType, carrierFile, voltages);
-	utilities::write_to_hetct_header(hetct_rc_filename, detector, C, dt, y_chifs, z_chifs, waveLength, scanType, carrierFile, voltages);
+	utilities::write_to_hetct_header(hetct_conv_filename, detector[tid], C, dt, y_chifs, z_chifs, waveLength, scanType, carrierFile, voltages);
+	utilities::write_to_hetct_header(hetct_noconv_filename, detector[tid], C, dt, y_chifs, z_chifs, waveLength, scanType, carrierFile, voltages);
+	utilities::write_to_hetct_header(hetct_rc_filename, detector[tid], C, dt, y_chifs, z_chifs, waveLength, scanType, carrierFile, voltages);
 
   }
 /*
@@ -526,15 +705,15 @@ void TRACSInterface::set_carrierFile(std::string newCarrFile)
 */
     void TRACSInterface::resize_array()
     {
-    	i_ramo_array.resize(num_threads);
-    	i_rc_array.resize(num_threads);
-    	i_conv_array.resize(num_threads);
+    	i_ramo_array.resize((size_t) num_threads);
+    	i_rc_array.resize((size_t) num_threads);
+    	i_conv_array.resize((size_t) num_threads);
 
     	for (int i = 0; i < num_threads; i++)
     		{
-    			i_ramo_array[i].resize(z_shifts_array[i].size());
-    			i_rc_array[i].resize(z_shifts_array[i].size());
-    			i_conv_array[i].resize(z_shifts_array[i].size());
+    			i_ramo_array[i].resize((size_t) z_shifts_array[i].size());
+    			i_rc_array[i].resize((size_t) z_shifts_array[i].size());
+    			i_conv_array[i].resize((size_t) z_shifts_array[i].size());
     			std::cout << "i_ramo_array[xlen][ylen]   " << i_ramo_array.size()<<"  " <<i_ramo_array[i].size() <<std::endl;
     		}	
 
@@ -551,11 +730,12 @@ void TRACSInterface::set_carrierFile(std::string newCarrFile)
     	std::cout << "Writing to file..." <<std::endl;
 
     		//n_par0 = (int) z_shifts_array[tid].size()-1;
+    		std::vector<int> params = {0, 0, 0};
     				params[0] = 0; //thread 
  					params[1] = 0; //yPos;
  					params[2] = 0; //vPos;
-		 	 		n_par1 = n_ySteps;
-			 		n_par2 = n_vSteps;
+		 	 		int n_par1 = n_ySteps;
+			 		int n_par2 = n_vSteps;
 	 		 		//loop
 		 		 	for (params[2] = 0; params[2] < n_par2 + 1; params[2]++)
 		 			{
@@ -565,9 +745,9 @@ void TRACSInterface::set_carrierFile(std::string newCarrFile)
 							{							
 								for (params[0] = 0; params[0] < i_ramo_array[i].size(); params[0]++)
 								{
-									utilities::write_to_file_row(hetct_noconv_filename, i_ramo_array[i][params[0]], detector->get_temperature(), y_shifts[params[1]], z_shifts_array[i][params[0]], voltages[params[2]]);
-									utilities::write_to_file_row(hetct_conv_filename, i_conv_array[i][params[0]], detector->get_temperature(), y_shifts[params[1]], z_shifts_array[i][params[0]], voltages[params[2]]);
-									utilities::write_to_file_row(hetct_rc_filename, i_rc_array[i][params[0]], detector->get_temperature(), y_shifts[params[1]], z_shifts_array[i][params[0]], voltages[params[2]]);
+									utilities::write_to_file_row(hetct_noconv_filename, i_ramo_array[i][params[0]], detector[tid]->get_temperature(), y_shifts[params[1]], z_shifts_array[i][params[0]], voltages[params[2]]);
+									utilities::write_to_file_row(hetct_conv_filename, i_conv_array[i][params[0]], detector[tid]->get_temperature(), y_shifts[params[1]], z_shifts_array[i][params[0]], voltages[params[2]]);
+									utilities::write_to_file_row(hetct_rc_filename, i_rc_array[i][params[0]], detector[tid]->get_temperature(), y_shifts[params[1]], z_shifts_array[i][params[0]], voltages[params[2]]);
 
 								}
 								
