@@ -451,6 +451,7 @@ void TRACSInterface::set_carrierFile(std::string newCarrFile)
 								std::cout << "Height " << z_shifts_array[tid][params[0]] << " of " << z_shifts.back()  <<  " || Y Position " << y_shifts[params[1]] << " of " << y_shifts.back() << " || Voltage " << voltages[params[2]] << " of " << voltages.back() << std::endl;								
 								set_zPos(z_shifts_array[tid][params[0]]);
 								simulate_ramo_current();
+								std::cout << "calculated current" << tid << std::endl;
 								i_ramo = GetItRamo();
 								i_ramo_array[tid][params[0]] = i_ramo; // for output
 								i_ramo = NULL;
